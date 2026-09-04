@@ -1,5 +1,11 @@
 # @orion-js/dogs
 
+## 4.6.8
+
+### Patch Changes
+
+- Add generic execution guard leases around job resolvers.
+
 ## 4.6.7
 
 ### Patch Changes
