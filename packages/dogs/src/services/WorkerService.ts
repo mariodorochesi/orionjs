@@ -196,6 +196,12 @@ export class WorkerService {
       maxTries: config.maxTries,
       maxTriesReachedRetentionMs: config.maxTriesReachedRetentionMs,
       onMaxTriesReached: config.onMaxTriesReached,
+      ...(config.executionGuard
+        ? {
+            executionGuard: config.executionGuard,
+            executionGuardRetryDelayMs: Math.max(config.pollInterval, 1_000),
+          }
+        : {}),
     }
 
     logger.debug(`Running scheduler loop for jobs "${jobNames.join(', ')}"...`)

@@ -320,6 +320,22 @@ export class JobsRepo {
     return result.matchedCount > 0
   }
 
+  async rescheduleAfterExecutionGuardAcquisitionFailure(
+    jobId: string,
+    lockId: string,
+    nextRunAt: Date,
+  ) {
+    const result = await this.jobs.updateOne(
+      {_id: jobId, lockId, tries: {$gte: 1}},
+      {
+        $set: {nextRunAt},
+        $inc: {tries: -1},
+        $unset: {lockId: '', lockedUntil: '', claimWasStale: ''},
+      },
+    )
+    return result.matchedCount > 0
+  }
+
   async deleteEventJob(jobId: string, lockId?: string) {
     const result = await this.jobs.deleteOne({
       _id: jobId,

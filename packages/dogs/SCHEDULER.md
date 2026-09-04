@@ -105,3 +105,36 @@ Dogs intentionally stores no cluster metadata for this setting. `WorkerInstance`
 
 `maxParallelExecutionsPerServer` retains its existing effective scope: each `startWorkers()` instance
 tracks its own per-job limit.
+
+## Execution guards
+
+`startWorkers()` accepts an optional `executionGuard`. Dogs calls `acquire(jobToRun)` after claiming
+a job and waits for the returned lease before invoking the resolver. The complete `JobToRun` is
+passed to the adapter so it can decide whether and how to protect that execution.
+
+The lease remains held until the resolver's actual Promise settles, even when the execution becomes
+stale and scheduler capacity is released earlier. Dogs then calls `release()` exactly once. A release
+failure is logged and does not alter the job result.
+
+If acquisition fails, Dogs does not invoke the resolver. It requeues the lock-owning job at least one
+second later, removes the lock, and reverses the claim's `tries` increment so no business attempt is
+consumed. The requeue is fenced by `lockId`; a stale execution cannot modify a newer claim.
+
+```ts
+import type {WorkerExecutionGuard} from '@orion-js/dogs'
+
+const executionGuard: WorkerExecutionGuard = {
+  async acquire(job) {
+    const protection = await infrastructureAdapter.protect(job)
+    return {
+      async release() {
+        await protection.release()
+      },
+    }
+  },
+}
+
+startWorkers({jobs, executionGuard})
+```
+
+Dogs does not provide or depend on any infrastructure-specific adapter.

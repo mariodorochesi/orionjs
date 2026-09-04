@@ -267,6 +267,45 @@ describe('JobsRepo', () => {
       expect(jobToRun.lockId).toBe(jobToRun.executionId)
     })
 
+    it('should requeue a guard acquisition failure without consuming a try', async () => {
+      const jobId = generateId()
+      const nextRunAt = new Date(Date.now() + 10_000)
+      await jobsRepo.jobs.insertOne({
+        _id: jobId,
+        jobName: 'test-job',
+        type: 'event',
+        priority: 100,
+        nextRunAt: new Date(),
+        tries: 3,
+        lockedUntil: new Date(Date.now() + 5_000),
+        lockId: 'owned-execution',
+      })
+
+      const didRequeue = await jobsRepo.rescheduleAfterExecutionGuardAcquisitionFailure(
+        jobId,
+        'owned-execution',
+        nextRunAt,
+      )
+
+      expect(didRequeue).toBe(true)
+      expect(await jobsRepo.jobs.findOne(jobId)).toMatchObject({
+        tries: 2,
+        nextRunAt,
+      })
+      const updatedJob = await jobsRepo.jobs.findOne(jobId)
+      expect(updatedJob.lockId).toBeUndefined()
+      expect(updatedJob.lockedUntil).toBeUndefined()
+
+      const staleExecutionDidRequeue =
+        await jobsRepo.rescheduleAfterExecutionGuardAcquisitionFailure(
+          jobId,
+          'stale-execution',
+          new Date(),
+        )
+      expect(staleExecutionDidRequeue).toBe(false)
+      expect((await jobsRepo.jobs.findOne(jobId)).tries).toBe(2)
+    })
+
     it('should reject mutations from an execution that no longer owns the lock', async () => {
       const jobId = generateId()
       await jobsRepo.jobs.insertOne({

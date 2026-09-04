@@ -5,6 +5,20 @@ export type LogLevels = 'debug' | 'info' | 'warn' | 'error' | 'none'
 
 export const DEFAULT_MAX_TRIES_REACHED_RETENTION_MS = 1000 * 60 * 60 * 24 * 7
 
+/**
+ * A lease held for the duration of one job resolver execution.
+ */
+export interface WorkerExecutionGuardLease {
+  release(): Promise<void>
+}
+
+/**
+ * Acquires infrastructure protection for a claimed job before its resolver starts.
+ */
+export interface WorkerExecutionGuard {
+  acquire(job: JobToRun): Promise<WorkerExecutionGuardLease>
+}
+
 export interface StartWorkersConfig {
   /**
    * Object map of the jobs that this scheduler will execute.
@@ -27,6 +41,12 @@ export interface StartWorkersConfig {
    * configured retention period expires.
    */
   onMaxTriesReached?: (job: JobToRun) => Promise<void>
+  /**
+   * Optional infrastructure guard acquired after a job is claimed and before its resolver starts.
+   * The returned lease is held until the resolver's Promise settles, including late stale
+   * executions. Acquisition failures safely requeue the job without consuming a business try.
+   */
+  executionGuard?: WorkerExecutionGuard
   /**
    * Time in milliseconds to wait between each look without results for a job
    * to run at the database. Default is 3000.

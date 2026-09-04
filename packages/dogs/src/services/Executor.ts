@@ -5,6 +5,7 @@ import {Inject, Service} from '@orion-js/services'
 import {JobsHistoryRepo} from '../repos/JobsHistoryRepo'
 import {JobsRepo} from '../repos/JobsRepo'
 import {EventJobDefinition, JobDefinition, JobsDefinition} from '../types/JobsDefinition'
+import {WorkerExecutionGuard, WorkerExecutionGuardLease} from '../types/StartConfig'
 import {ExecutionContext, JobToRun} from '../types/Worker'
 import {getNextRunDate} from './getNextRunDate'
 
@@ -16,6 +17,8 @@ export interface ExecuteJobConfig {
   maxTries?: number
   maxTriesReachedRetentionMs?: number | null
   onMaxTriesReached?: (job: JobToRun) => Promise<void>
+  executionGuard?: WorkerExecutionGuard
+  executionGuardRetryDelayMs?: number
 }
 
 @Service()
@@ -326,6 +329,60 @@ export class Executor {
     return false
   }
 
+  async handleExecutionGuardAcquisitionFailure(
+    error: unknown,
+    config: ExecuteJobConfig,
+    jobToRun: JobToRun,
+    context: ExecutionContext,
+  ) {
+    context.logger.error(`Error acquiring execution guard for job "${jobToRun.name}"`, {error})
+
+    const nextRunAt = new Date(Date.now() + (config.executionGuardRetryDelayMs ?? 1_000))
+    try {
+      const didReschedule = await this.jobsRepo.rescheduleAfterExecutionGuardAcquisitionFailure(
+        jobToRun.jobId,
+        jobToRun.lockId,
+        nextRunAt,
+      )
+      if (!didReschedule) {
+        context.logger.warn(
+          `Could not requeue job "${jobToRun.name}" after execution guard acquisition failed because its lock is no longer owned`,
+        )
+      }
+    } catch (rescheduleError) {
+      context.logger.error(
+        `Error requeueing job "${jobToRun.name}" after execution guard acquisition failed`,
+        {error: rescheduleError},
+      )
+    }
+  }
+
+  async releaseExecutionGuardLease(
+    lease: WorkerExecutionGuardLease,
+    jobToRun: JobToRun,
+    context: ExecutionContext,
+  ) {
+    try {
+      await lease.release()
+    } catch (error) {
+      context.logger.error(`Error releasing execution guard for job "${jobToRun.name}"`, {error})
+    }
+  }
+
+  async runGuardedResolver(
+    job: JobDefinition,
+    jobToRun: JobToRun,
+    context: ExecutionContext,
+    lease: WorkerExecutionGuardLease,
+  ) {
+    try {
+      return await job.resolve(jobToRun.params, context)
+    } finally {
+      context.clearStaleTimeout()
+      await this.releaseExecutionGuardLease(lease, jobToRun, context)
+    }
+  }
+
   async executeJob(config: ExecuteJobConfig, jobToRun: JobToRun, onExecutionStale: () => void) {
     const job = this.getJobDefinition(jobToRun, config.jobs)
     if (!job) return
@@ -424,14 +481,43 @@ export class Executor {
         }
 
         await runWithOrionAsyncContext(extraContext, async () => {
-          try {
-            // Inject async context update
+          let executionGuardLease: WorkerExecutionGuardLease | undefined
+          if (config.executionGuard) {
             updateOrionAsyncContext({
               jobName: jobToRun.name,
               jobId: jobToRun.jobId,
               params: jobToRun.params,
             })
-            const result = await job.resolve(jobToRun.params, context)
+
+            try {
+              executionGuardLease = await config.executionGuard.acquire(jobToRun)
+            } catch (error) {
+              context.clearStaleTimeout()
+              await this.handleExecutionGuardAcquisitionFailure(error, config, jobToRun, context)
+              if (executionStatus === 'stale') await staleHandlingPromise
+              return
+            }
+
+            if (executionStatus === 'stale') {
+              await staleHandlingPromise
+              await this.releaseExecutionGuardLease(executionGuardLease, jobToRun, context)
+              return
+            }
+          }
+
+          try {
+            if (!config.executionGuard) {
+              // Preserve the unguarded execution path, including its existing error handling.
+              updateOrionAsyncContext({
+                jobName: jobToRun.name,
+                jobId: jobToRun.jobId,
+                params: jobToRun.params,
+              })
+            }
+
+            const result = executionGuardLease
+              ? await this.runGuardedResolver(job, jobToRun, context, executionGuardLease)
+              : await job.resolve(jobToRun.params, context)
             context.clearStaleTimeout()
 
             if (executionStatus === 'stale') {
