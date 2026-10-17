@@ -106,6 +106,19 @@ Dogs intentionally stores no cluster metadata for this setting. `WorkerInstance`
 `maxParallelExecutionsPerServer` retains its existing effective scope: each `startWorkers()` instance
 tracks its own per-job limit.
 
+## Claim filters
+
+Before each claim, after applying `maxParallelExecutionsPerServer`, Dogs evaluates the optional
+`getJobsFilter()` from `startWorkers()` and then `canTakeJobs()` of each remaining job definition.
+`allow` keeps only listed job names, `deny` removes listed names, and undefined properties are
+ignored; unknown names are logged once as a warning. A `getJobsFilter` error excludes every job; a
+`canTakeJobs` error or non-`true` result excludes that job. Each call times out after 5 seconds and
+counts as an error. A timed out call is not repeated until it settles; meanwhile later claims
+exclude it immediately instead of waiting again. `stop()` does not wait for a pending evaluation. Both functions run before
+every claim without caching; if they become expensive, add a short TTL cache in `jobFilters.ts`. Excluded job names use the by-job-name hint like capacity filtering. When every
+job is excluded, the scheduler waits `pollInterval` (or for capacity if concurrency is full) before
+evaluating again.
+
 ## Execution guards
 
 `startWorkers()` accepts an optional `executionGuard`. Dogs calls `acquire(jobToRun)` after claiming

@@ -276,6 +276,74 @@ describe('WorkerService', () => {
     await instance.stop()
   })
 
+  it('should only claim jobs allowed by getJobsFilter and canTakeJobs', async () => {
+    const workerService = new WorkerService() as any
+    const getJobAndLock = mock(async () => undefined)
+    workerService.jobsRepo = {getJobAndLock}
+    const config = {
+      ...workersConfig(),
+      jobs: {
+        firstJob: {type: 'event', canTakeJobs: async () => true, resolve: async () => {}},
+        secondJob: {type: 'event', canTakeJobs: async () => false, resolve: async () => {}},
+        thirdJob: {type: 'recurrent', resolve: async () => {}},
+      },
+      getJobsFilter: async () => ({deny: ['thirdJob']}),
+    }
+    const instance = workerService.createWorkersInstanceDefinition(config) as any
+    instance.schedulerPromise = workerService.runSchedulerLoop(config, instance)
+
+    await waitUntil(() => getJobAndLock.mock.calls.length === 1)
+    expect(getJobAndLock.mock.calls[0]).toEqual([['firstJob'], 1000, 'byJobName', 0])
+
+    await instance.stop()
+  })
+
+  it('should wait for the poll interval without claiming when every job is filtered', async () => {
+    const workerService = new WorkerService() as any
+    const getJobAndLock = mock(async () => undefined)
+    workerService.jobsRepo = {getJobAndLock}
+    let filterCalls = 0
+    const config = {
+      ...workersConfig(),
+      pollInterval: 20,
+      getJobsFilter: async () => {
+        filterCalls++
+        if (filterCalls === 1) throw new Error('Load check failed')
+        return {allow: []}
+      },
+    }
+    const instance = workerService.createWorkersInstanceDefinition(config) as any
+    instance.schedulerPromise = workerService.runSchedulerLoop(config, instance)
+
+    await sleep(55)
+    await instance.stop()
+
+    expect(getJobAndLock.mock.calls.length).toBe(0)
+    expect(filterCalls).toBeGreaterThanOrEqual(2)
+    expect(filterCalls).toBeLessThanOrEqual(4)
+  })
+
+  it('should stop without waiting for a pending getJobsFilter', async () => {
+    const workerService = new WorkerService() as any
+    const getJobAndLock = mock(async () => undefined)
+    workerService.jobsRepo = {getJobAndLock}
+    let filterCalls = 0
+    const config = {
+      ...workersConfig(),
+      getJobsFilter: () => {
+        filterCalls++
+        return new Promise(() => {})
+      },
+    }
+    const instance = workerService.createWorkersInstanceDefinition(config) as any
+    instance.schedulerPromise = workerService.runSchedulerLoop(config, instance)
+
+    await waitUntil(() => filterCalls === 1)
+    await instance.stop()
+
+    expect(getJobAndLock.mock.calls.length).toBe(0)
+  })
+
   it('should select the startup winner immediately and require two later wins to switch', async () => {
     const workerService = new WorkerService() as any
     const config = workersConfig()

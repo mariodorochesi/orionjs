@@ -183,6 +183,7 @@ export default class NotificationJobs {
 | `getNextRun` | `Function` | Function returning a Date for the next execution. Takes precedence over `runEvery`. |
 | `priority` | `number` | Job priority. Higher numbers get executed first (default: 100). |
 | `lockTime` | `number` | Override the global `defaultLockTime` for this job only. |
+| `canTakeJobs` | `() => Promise<boolean>` | Evaluated before each claim. This server only takes the job when it resolves to `true`; errors and timeouts (5s) count as `false`. |
 | `onError` | `Function` | Called if the job fails. Can be used to retry or dismiss the job. |
 | `onStale` | `Function` | Called if the job locktime is expired. |
 | `saveExecutionsFor` | `number` | Time in milliseconds to keep job execution history (default: 1 week). Set to 0 to disable. |
@@ -196,6 +197,7 @@ export default class NotificationJobs {
 | `lockTime` | `number` | Override the global `defaultLockTime` for this job only. |
 | `maxTries` | `number` | Override the global event `maxTries` for this job only. |
 | `maxParallelExecutionsPerServer` | `number` | Limit how many executions of this job can run at the same time in a single server process. |
+| `canTakeJobs` | `() => Promise<boolean>` | Evaluated before each claim. This server only takes the job when it resolves to `true`; errors and timeouts (5s) count as `false`. |
 | `onError` | `Function` | Called if the job fails. Can be used to retry or dismiss the job. |
 | `onStale` | `Function` | Called if the job locktime is expired. |
 | `saveExecutionsFor` | `number` | Time in milliseconds to keep job execution history (default: 1 week). Set to 0 to disable. |
@@ -263,6 +265,36 @@ generateInvoicePdf = createEventJob({
 ```
 
 This limit only applies to event jobs. Recurrent jobs already execute as a single job record, so they do not need this option.
+
+### Deciding which jobs a server takes
+
+Use `canTakeJobs` on any job, or `getJobsFilter` in `startWorkers`, to stop a server from taking
+some jobs, for example heavy jobs while it is under load. Both are evaluated before every claim
+without caching, so keep them cheap (read local metrics instead of calling remote services). If one
+throws or takes more than 5 seconds, the affected jobs are not taken on that claim. They only affect
+new claims; running jobs continue and unclaimed jobs stay queued for other servers.
+
+```typescript
+@EventJob()
+generateReport = createEventJob({
+  // Must resolve to true to take the job. If it throws, the job is not taken
+  canTakeJobs: async () => (await getCpuUsage()) < 0.8,
+  resolve: async () => {
+    await buildReport()
+  }
+})
+
+startWorkers({
+  // Undefined properties are ignored. allow: [] takes nothing. If it throws, nothing is taken
+  getJobsFilter: async () => {
+    if (await isUnderHeavyLoad()) return {deny: ['generateReport', 'generateInvoicePdf']}
+    return {}
+  }
+})
+```
+
+`allow` takes only the listed jobs and `deny` excludes the listed jobs. When both are defined, a
+job must be in `allow` and not in `deny`. Unknown job names are ignored and logged once as a warning.
 
 ## Scheduling Event Jobs
 

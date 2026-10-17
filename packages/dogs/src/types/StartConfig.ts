@@ -19,6 +19,22 @@ export interface WorkerExecutionGuard {
   acquire(job: JobToRun): Promise<WorkerExecutionGuardLease>
 }
 
+/**
+ * Job names this server can take. Undefined properties are ignored; an empty allow list takes nothing.
+ */
+export interface JobsFilter {
+  /**
+   * Only these jobs can be taken.
+   */
+  allow?: string[]
+  /**
+   * These jobs can't be taken.
+   */
+  deny?: string[]
+}
+
+export type GetJobsFilter = () => Promise<JobsFilter>
+
 export interface StartWorkersConfig {
   /**
    * Object map of the jobs that this scheduler will execute.
@@ -47,6 +63,13 @@ export interface StartWorkersConfig {
    * executions. Acquisition failures safely requeue the job without consuming a business try.
    */
   executionGuard?: WorkerExecutionGuard
+  /**
+   * Optional function evaluated before each claim to decide which jobs this server can take,
+   * for example to stop taking heavy jobs while the server is under load.
+   * If it throws or takes more than 5 seconds, no jobs are taken on that claim.
+   * Running jobs are not affected. It runs before every claim without caching, so keep it cheap.
+   */
+  getJobsFilter?: GetJobsFilter
   /**
    * Time in milliseconds to wait between each look without results for a job
    * to run at the database. Default is 3000.

@@ -11,6 +11,11 @@ import {JobDefinitionWithName, JobsDefinition} from '../types/JobsDefinition'
 import {DEFAULT_MAX_TRIES_REACHED_RETENTION_MS, StartWorkersConfig} from '../types/StartConfig'
 import {JobToRun, WorkersInstance} from '../types/Worker'
 import {ExecuteJobConfig, Executor} from './Executor'
+import {
+  DEFAULT_JOBS_FILTER_TIMEOUT_MS,
+  getTakeableJobNames,
+  PendingFilterChecks,
+} from './jobFilters'
 import {createShuffledPartitions, getRandomPartition, validatePartitionsCount} from './partitions'
 
 const FILTERED_JOB_NAMES_ACQUISITION_HINT = 'byJobName' as const satisfies JobAcquisitionHint
@@ -27,6 +32,7 @@ interface InternalWorkersInstance extends WorkersInstance {
   activeExecutions: Map<string, TrackedExecution>
   staleExecutions: Map<string, TrackedExecution>
   runningJobsByName: Map<string, number>
+  pendingFilterChecks: PendingFilterChecks
   jobAcquisitionHint: JobAcquisitionHint
   jobAcquisitionHintProbeCycle: number
   hasCompletedInitialJobAcquisitionHintProbe: boolean
@@ -53,6 +59,7 @@ export class WorkerService {
   private partitionReconcilerJitterMs = 30 * 1000
   private partitionReconcilerBatchPauseMs = 250
   private partitionReconcilerBatchSize = 500
+  private jobsFilterTimeoutMs = DEFAULT_JOBS_FILTER_TIMEOUT_MS
 
   @Inject(() => JobsRepo)
   private jobsRepo: JobsRepo
@@ -213,10 +220,28 @@ export class WorkerService {
 
       try {
         while (workersInstance.activeExecutions.size < config.workersCount) {
-          const availableJobNames = this.getAvailableJobNames(config, workersInstance, jobNames)
+          const jobNamesWithCapacity = this.getAvailableJobNames(config, workersInstance, jobNames)
+
+          if (jobNamesWithCapacity.length === 0) {
+            allJobNamesAtCapacity = workersInstance.activeExecutions.size > 0
+            break
+          }
+
+          // stop() must not wait for a slow user filter
+          const availableJobNames = await Promise.race([
+            getTakeableJobNames({
+              jobs: config.jobs,
+              getJobsFilter: config.getJobsFilter,
+              jobNames: jobNamesWithCapacity,
+              timeoutMs: this.jobsFilterTimeoutMs,
+              pendingChecks: workersInstance.pendingFilterChecks,
+            }),
+            workersInstance.stopSignal.then((): string[] => []),
+          ])
+          if (!workersInstance.running) break
 
           if (availableJobNames.length === 0) {
-            allJobNamesAtCapacity = workersInstance.activeExecutions.size > 0
+            didMiss = true
             break
           }
 
@@ -461,6 +486,7 @@ export class WorkerService {
       activeExecutions: new Map(),
       staleExecutions: new Map(),
       runningJobsByName: new Map(),
+      pendingFilterChecks: new Map(),
       jobAcquisitionHint: INITIAL_JOB_ACQUISITION_HINT,
       jobAcquisitionHintProbeCycle: 0,
       hasCompletedInitialJobAcquisitionHintProbe: false,

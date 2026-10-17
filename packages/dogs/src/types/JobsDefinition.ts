@@ -41,6 +41,14 @@ export interface BaseJobDefinition {
    * If not set, the defaultLockTime from config will be used.
    */
   lockTime?: number
+
+  /**
+   * Optional function evaluated before each claim to decide if this server can take this job,
+   * for example to stop taking a heavy job while the server is under load.
+   * Must resolve to true to take the job. If it throws or takes more than 5 seconds, the job is not taken.
+   * Running jobs are not affected. It runs before every claim without caching, so keep it cheap.
+   */
+  canTakeJobs?: () => Promise<boolean>
 }
 
 export interface RecurrentJobDefinition extends BaseJobDefinition {

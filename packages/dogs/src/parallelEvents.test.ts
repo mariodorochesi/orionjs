@@ -1,6 +1,14 @@
 import {generateId, sleep} from '@orion-js/helpers'
 import {defineJob, scheduleJob, startWorkers} from '.'
 
+async function waitUntil(check: () => boolean, timeout = 3000) {
+  const startedAt = Date.now()
+  while (!check()) {
+    if (Date.now() - startedAt > timeout) throw new Error('Timed out waiting for condition')
+    await sleep(5)
+  }
+}
+
 describe('Parallel Event Jobs', () => {
   it('Should run multiple event jobs with the same jobName in parallel', async () => {
     const jobName = `parallelJob${generateId()}`
@@ -278,5 +286,57 @@ describe('Parallel Event Jobs', () => {
 
     expect(executions).toHaveLength(5)
     expect(maxRunningExecutions).toBe(2)
+  })
+
+  it('Should only take jobs while canTakeJobs and getJobsFilter allow them', async () => {
+    const heavyJobName = `heavyJob${generateId()}`
+    const lightJobName = `lightJob${generateId()}`
+    const executions: string[] = []
+    let canTakeHeavyJobs = false
+    let heavyJobChecks = 0
+    let deniedJobNames = [lightJobName]
+
+    const heavyJob = defineJob({
+      type: 'event',
+      canTakeJobs: async () => {
+        heavyJobChecks++
+        return canTakeHeavyJobs
+      },
+      async resolve() {
+        executions.push(heavyJobName)
+      },
+    })
+    const lightJob = defineJob({
+      type: 'event',
+      async resolve() {
+        executions.push(lightJobName)
+      },
+    })
+
+    await scheduleJob({name: heavyJobName, params: {}})
+    await scheduleJob({name: lightJobName, params: {}})
+
+    const instance = startWorkers({
+      jobs: {[heavyJobName]: heavyJob, [lightJobName]: lightJob},
+      getJobsFilter: async () => ({deny: deniedJobNames}),
+      workersCount: 2,
+      pollInterval: 10,
+    })
+
+    // Both jobs are due; several filtered claim cycles must pass without executing them
+    await waitUntil(() => heavyJobChecks >= 3)
+    expect(executions).toEqual([])
+
+    deniedJobNames = []
+    await waitUntil(() => executions.length === 1)
+    const checksAfterLightJob = heavyJobChecks
+    await waitUntil(() => heavyJobChecks >= checksAfterLightJob + 3)
+    expect(executions).toEqual([lightJobName])
+
+    canTakeHeavyJobs = true
+    await waitUntil(() => executions.length === 2)
+    await instance.stop()
+
+    expect(executions).toEqual([lightJobName, heavyJobName])
   })
 })
