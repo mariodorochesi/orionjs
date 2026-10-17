@@ -1,5 +1,11 @@
 # @orion-js/dogs
 
+## 4.6.9
+
+### Patch Changes
+
+- Add `canTakeJobs` job option and `getJobsFilter` worker option to control which jobs a server claims
+
 ## 4.6.8
 
 ### Patch Changes
